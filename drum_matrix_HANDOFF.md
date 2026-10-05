@@ -1,4 +1,4 @@
-# Pedal Drum Matrix (Buzz 1503) — Handoff (v1.3.5)
+# Pedal Drum Matrix (Buzz 1503) — Handoff (v1.3.6)
 
 A drum-centric multi-effect machine, ported from ReBuzz to Jeskola Buzz 1503
 (32-bit), tailored to a Behringer BCR2000
@@ -15,16 +15,62 @@ authoritative on host behaviour; see §0.
 
 ---
 
-## 0. Buzz 1503 port (separate repo: pedal-drum-matrix-buzz-1503)
+## 0. Buzz 1503 port (separate repo: pedal-drum-matrix-buzz-v1503)
+
+Repo releases are numbered independently of ReBuzz: release v1.0 = ReBuzz
+v1.3.5, v1.1 = ReBuzz v1.3.6, v1.2 = ReBuzz v1.3.6 + readout panel. The assembly / About version stays on the ReBuzz number it tracks.
 
 Same DSP, parameter layout (49, unchanged order) and preset contents as the
-ReBuzz v1.3.5.
+ReBuzz v1.3.6.
 
-**Port deltas against ReBuzz v1.3.5** (everything else is byte-identical to
+**Port deltas against ReBuzz v1.3.6** (everything else is byte-identical to
 the ReBuzz source, which adopted the v1.3.3 port's host-boundary fixes):
 
 - `PedalDrumMatrix.NET.csproj` (net48 / x86, `BuzzDir`, Buzz paths).
 - About box: "(Buzz 1503)" in the title, this repo's URL, GPL-3.0.
+- `ReadoutGui.cs` (port-only file, v1.2): embedded WPF readout panel. See below.
+
+**Why the panel exists.** Buzz 1503 never calls `DescribeValue` (confirmed in
+Buzz: the parameter window shows raw 0-127 values). Buzz's own changelog
+(jeskola.net/buzz/beta/files/changelog.txt) lists the managed-machine features
+up to build 1503 — managed support 1416, commands 1427, track parameters 1437,
+ImportFinished 1438, control-machine Work 1496, GetLatency 1499 — and
+`IBuzzMachine.cs` puts `DescribeValue`, `GetChannelName` and the multi-I/O
+`Work` overloads in an "Update 1" block listed after GetLatency, i.e. after
+1503. So none of the Update 1 members exist in 1503.
+
+**How the panel works.** `ReadoutGuiFactory` (IMachineGUIFactory, embedded,
+1503 notes 4.1) creates `ReadoutGui`, an `OnRender` FrameworkElement with the
+4.2 Measure/Arrange pattern (adapts to the parameter window's width, fixed
+height ~190 px: header, six slot rows, three rows of global settings).
+`MachineBinding` reads values from the machine's int properties and labels them with the machine's own `DescribeValue`, passing
+Buzz's real `IParameter` objects (from `IMachine.ParameterGroups`, built lazily
+and retried until available; 1503 notes 2.5 / 3.5); list parameters fall back
+to their `ValueDescriptions`, anything else to the raw number. `ReadoutModel`
+holds the text (no WPF, tested headless). A 10 Hz `DispatcherTimer` (started
+on Loaded, stopped on Unloaded) refreshes the model and redraws only when a
+label changes. Colours come from `SystemColors`. Display only: no parameter
+writes. Labels are parameter values, not modulated values.
+
+Layout is stable by design. Slot columns (Effect, Char, Mode) are sized from
+the widest labels the *loaded* effects can show: `ReadoutModel.Widest` sweeps
+Char 0-127 and Mode 0-1 through `DescribeValue` once per effect (Resonator also
+keyed by Key and Scale) and caches the longest candidates; the GUI measures
+them. Global settings get the same treatment per parameter (`W()`, sweeping
+0..MaxValue), and each row is spaced by those widths, not aligned across rows.
+So moving a slider never moves text; changing an effect can resize columns.
+v1.2's first draft sized columns for the widest label of *any* effect, which
+dropped the Env and LFO columns at a 125%-scaled window, and laid the globals
+out in two rows that got trimmed; both fixed before release. When the window
+is still too narrow: drop LFO, then Env, then trim Char; a global row too wide
+is squeezed evenly and trimmed.
+
+**Porting a future ReBuzz release with the panel:** keep `ReadoutGui.cs`. New
+effect types and changed labels need nothing (they come through
+`DescribeValue`). New parameters appear only if added to `ReadoutModel`.
+Renamed parameters must be renamed there too, or they show as 0. Column
+widths follow the labels automatically (they are found by sweeping
+`DescribeValue`), so wider new labels need nothing.
 
 (v1.3.4 also carried a "12/24 dB per oct" Mode readout to avoid a `/`; v1.3.5's
 "Low Q" / "High Q" readouts need no change, so that delta is gone.)
@@ -52,7 +98,23 @@ strings for non-ASCII and `/ < > &`.
 - **Licence** GPL-3.0 (1503 notes 6): `LICENSE` in the repo root, stated in the
   README and the About box. The ReBuzz original's About box says MIT.
 
-Validation done in the dev container (v1.3.3; re-run for each release. v1.3.5
+Validation done in the dev container (v1.3.3; re-run for each release. v1.3.6
+new-effect checks on broadband noise at full Amount, Char 64, both Modes:
+Transient 0.0 dB (Char 64 is neutral), Wavefolder -1.6 / +2.1, Phaser -0.3 /
+-0.3, SubOctave +2.0 / +2.3, Formant -2.1 / +2.7 dB vs dry; all finite and the
+rack sleeps after input stops; SubOctave on 110 Hz puts a 55 Hz component at
+-2.7 dB relative to the fundamental. v1.2 panel: compiled against stubs of the
+.NET 4.8 WPF and BuzzGUI GUI types (Mono has no WPF), and a headless test drove
+it through a fake host: labels match DescribeValue (Resonator note names,
+Delay feedback, Bitcrush rate, Amount as a percentage), list parameters show
+their descriptions, a Type change relabels Char on the next tick, unchanged
+values cause no redraw, nothing is drawn past the right edge at 340 px; with
+the six effects from the Buzz screenshot at 440 px (the window at 125%
+scaling), Env and LFO fit and all eleven global settings show untrimmed, and
+setting values to their extremes moves no text; raw
+values show until Buzz's parameter objects exist and labels after, and a null
+machine draws a placeholder. Real fonts, colours and Buzz's embedding are not
+covered by that test. v1.3.5
 filter checks: LP at Char 30 (~465 Hz) passes 60 Hz at 0 dB and cuts 8 kHz by
 51 dB; HP at Char 69 (~2 kHz) cuts 60 Hz by 61 dB; at cutoff Low Q reads
 -3.0 dB and High Q +15.6 dB, i.e. Q 0.707 and 6; Amount 64 gives about -6 dB
@@ -180,7 +242,7 @@ false) only when nothing is ringing — `AnyTailRinging()` OR `_feedback.IsRingi
 ## 6. Effect palette
 
 `FxType` enum (index = preset contract, append only):
-`None=0, Bitcrush, Drive, Lowpass, RingMod, Comb, Stutter, Delay, Reverb, Gate, Resonator(=10), Highpass(=11)`.
+`None=0, Bitcrush, Drive, Lowpass, RingMod, Comb, Stutter, Delay, Reverb, Gate, Resonator(=10), Highpass(=11), Transient(=12), Wavefolder(=13), Phaser(=14), SubOctave(=15), Formant(=16)`.
 (Lowpass keeps value 3 — the former `Filter` — so old lowpass-mode instances are
 bit-identical; Highpass is appended at 11.)
 
@@ -193,6 +255,23 @@ Char (the rotary character), and Mode (the switch). Meanings:
   state-variable filter (LP/HP fixed at construction). Amount blends dry ->
   filtered (how much filter is applied); Char sets cutoff (150 Hz -> 18 kHz);
   Mode selects one of two Q values (0.707 gentle / 6.0 resonant), crossfaded.
+- **Transient** — differential-envelope transient designer. Amount: intensity.
+  Char: attack (sharpen) <-> sustain (fatten), neutral at centre. Mode: fast /
+  slow detector. Stereo-linked detector; tail-free.
+- **Wavefolder** — sine wavefolder (bright inharmonic partials, unlike Drive's
+  clipping). Amount: drive into the fold. Char: fold density (brightness). Mode:
+  symmetric / asymmetric (bias -> even harmonics). Fold brightness rises with
+  input level and the output follows the input envelope, so louder hits fold
+  brighter and quiet tails stay clean (bell/FM-like, level-matched). Tail-free.
+- **Phaser** — up to 8 cascaded first-order allpasses with feedback, mixed with
+  dry. Amount: depth/mix. Char: sweep position (the allpass frequency; drive it
+  with the LFO/envelope). Mode: 4 / 8 stages. Tail-free.
+- **SubOctave** — flip-flop octave divider (square from rising zero-crossings of
+  the lowpassed mono input, envelope-followed, tone-shaped, mixed under dry).
+  Amount: sub level. Char: sub tone. Mode: -1 / -2 octaves. Best on mono hits.
+- **Formant** — three band-pass resonators at vowel formants, summed. Amount:
+  mix. Char: vowel morph A-E-I-O-U. Mode: dark / bright tilt. Sweep Char with the
+  LFO for a talking filter.
 - **RingMod** — Char: carrier fine tune (+/-1 oct). Mode: ring mod -> AM.
   Amount sets carrier 30 Hz to 3 kHz.
 - **Comb** — Char: feedback damping. Mode: +feedback -> -feedback (passes
@@ -432,6 +511,13 @@ named state per effect (`Lowpass`/`Highpass`, etc.).
 - Tail-aware sleep: OR every slot IsRinging with feedback.IsRinging.
 - Feedback tapped post-slots / pre-limiter, injected pre-slot 0; in-loop tanh +
   DC blocker keep it stable; amount capped at ~0.2.
+- Effect output levels are calibrated to sit near unity power (measured on
+  broadband noise): full-wet/blended effects carry a fixed makeup constant
+  (Formant x3.5, Phaser x0.87) and the SubOctave sub is scaled to about +2 dB.
+  The Wavefolder scales its folded output by the input envelope (dynamics-
+  tracking), which both level-matches it and keeps quiet tails clean; makeup 0.75. When adding or retuning an effect, measure RMS gain vs dry and
+  trim so it is roughly level-matched to the others (cheap: one baked constant,
+  no per-slot auto-gain).
 - Resonator gets Key/Scale via SetMusicalContext (empty method in other fx).
 - Check `WM_READ` before touching `input` (1503 notes 2.1); never read a
   stale buffer.
@@ -545,7 +631,14 @@ both-modes compute cheap), and fast `Sin` for the RingMod/LFO oscillators.
   cascaded second stage; single 12 dB per oct stage. This remaps all three
   filter controls, so the preset bank was migrated (cutoff from the old amount,
   full wet, Q from the old resonance) and existing songs with filter slots need
-  their filter controls reset. Ported to Buzz 1503 the same release.
+  their filter controls reset. Ported to Buzz 1503 the same release (repo
+  release v1.0).
+- **v1.3.6** — five new effect types appended (12-16): Transient designer,
+  Wavefolder, Phaser, SubOctave divider, Formant (vowel) filter. Enum/palette
+  append-only; Slot Type MaxValue 11 -> 16. Existing songs/presets unaffected.
+  Ported to Buzz 1503 as repo release v1.1 (no port-specific changes needed:
+  the new code uses only shimmed `MathF` members and net48 APIs, and its
+  readouts are ASCII with no `/ < > &`).
 
 ## 17. Roadmap / declined
 

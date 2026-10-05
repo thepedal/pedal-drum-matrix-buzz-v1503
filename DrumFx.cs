@@ -5,7 +5,8 @@ namespace PedalDrumMatrix
     // Fixed-order palette. ORDER IS A PRESET CONTRACT (Build §3.3): append only.
     public enum FxType
     {
-        None = 0, Bitcrush, Drive, Lowpass, RingMod, Comb, Stutter, Delay, Reverb, Gate, Resonator, Highpass
+        None = 0, Bitcrush, Drive, Lowpass, RingMod, Comb, Stutter, Delay, Reverb, Gate, Resonator, Highpass,
+        Transient, Wavefolder, Phaser, SubOctave, Formant
     }
 
     // One effect occupying a slot. Stereo, per-sample.
@@ -41,6 +42,11 @@ namespace PedalDrumMatrix
             FxType.Reverb   => new ReverbFx(),
             FxType.Gate     => new GateFx(),
             FxType.Resonator => new ResonatorFx(),
+            FxType.Transient => new TransientFx(),
+            FxType.Wavefolder => new WavefolderFx(),
+            FxType.Phaser    => new PhaserFx(),
+            FxType.SubOctave => new SubOctaveFx(),
+            FxType.Formant   => new FormantFx(),
             _ => new NoneFx()
         };
     }
@@ -714,5 +720,249 @@ namespace PedalDrumMatrix
             _tail.Feed(amount * dL, amount * dR);
         }
         public bool IsRinging => _tail.Ringing;
+    }
+
+    // ── Transient ─ char: attack↔sustain · mode: fast/slow detector ──────────
+    // Differential-envelope transient designer. A fast and a slow follower of the
+    // (stereo-linked) level; their difference marks attack (fast>slow) vs sustain
+    // (fast<slow). Char tilts the gain toward sharpening the hit or fattening the
+    // body; Amount scales the whole effect; Mode sets detector speed. Tail-free.
+    public sealed class TransientFx : IDrumFx
+    {
+        float _sr = 44100f, _fast, _slow, _fAtk, _fRel, _sAtk, _sRel;
+        public void Prepare(float sr, float spt) { _sr = sr > 0 ? sr : 44100f; Reset(); }
+        public void Reset() { _fast = _slow = 0f; SetTimes(0f); }
+        void SetTimes(float mode)
+        {
+            // mode 0 = fast detector, mode 1 = slower/broader
+            float fa = 0.5f + mode * 1.5f, fr = 20f + mode * 40f;
+            float sa = 15f + mode * 35f,  sr = 150f + mode * 250f;
+            _fAtk = Co(fa); _fRel = Co(fr); _sAtk = Co(sa); _sRel = Co(sr);
+        }
+        float Co(float ms) => (float)Math.Exp(-1.0 / (ms * 0.001 * _sr));
+        public void Process(ref float l, ref float r, float amount, float p1, float mode)
+        {
+            if (amount <= 0f) return;
+            SetTimes(mode);
+            float a = MathF.Max(MathF.Abs(l), MathF.Abs(r));          // stereo-linked detector
+            _fast = a > _fast ? a + (_fast - a) * _fAtk : a + (_fast - a) * _fRel;
+            _slow = a > _slow ? a + (_slow - a) * _sAtk : a + (_slow - a) * _sRel;
+            _fast = Dsp.Ftz(_fast); _slow = Dsp.Ftz(_slow);
+
+            float s = (p1 - 0.5f) * 2f;                               // -1 sharpen .. +1 fatten
+            float d = _fast - _slow;                                  // >0 attack, <0 sustain
+            float g = 1f;
+            if (d > 0f) g += (-s) * d * 8f;                           // attack boost/cut
+            else        g += ( s) * (-d) * 8f;                        // sustain boost/cut
+            if (g < 0.1f) g = 0.1f; else if (g > 4f) g = 4f;
+            g = 1f + (g - 1f) * amount;                               // Amount = intensity
+            l *= g; r *= g;
+        }
+        public bool IsRinging => false;
+        public void SetMusicalContext(int key, int scale) { }
+    }
+
+    // ── Wavefolder ─ char: fold amount · mode: symmetric/asymmetric ──────────
+    // Sine wavefolder (West-Coast style): as level/fold rises the signal reflects
+    // through the sine repeatedly, adding bright inharmonic partials unlike the
+    // squaring of Drive. Amount drives level into the fold; Char sets fold
+    // density; Mode adds a bias for asymmetric (even-harmonic) folding. Tail-free.
+    public sealed class WavefolderFx : IDrumFx
+    {
+        float _sr = 44100f; int _cc;
+        float _pre = 1f, _foldK = 1f, _bias, _dc;
+        float _envL, _envR, _envRel;
+        const float Makeup = 0.75f;
+        public void Prepare(float sr, float spt)
+        {
+            _sr = sr > 0 ? sr : 44100f;
+            _envRel = (float)Math.Exp(-1.0 / (0.006 * _sr));         // 6 ms envelope release
+            Reset();
+        }
+        public void Reset() { _cc = 0; _envL = _envR = 0f; }
+        public void Process(ref float l, ref float r, float amount, float p1, float mode)
+        {
+            if (amount <= 0f) return;
+            if (_cc == 0)
+            {
+                _pre   = 1f + amount * 3f;                            // drive into the fold
+                _foldK = (0.5f + p1 * 2f) * MathF.PI;                 // fold density (brightness)
+                _bias  = mode * 0.5f;                                 // asymmetric → even harmonics
+                _dc    = MathF.Sin(_bias * _foldK);
+                _cc = 16;
+            }
+            _cc--;
+            // Fold brightness rises with input level (louder = more folds); the
+            // output amplitude follows the input envelope, so quiet tails stay
+            // quiet and clean (bell/FM-like, and level-matched to the dry).
+            float aL = MathF.Abs(l); _envL = aL > _envL ? aL : aL + (_envL - aL) * _envRel;
+            float aR = MathF.Abs(r); _envR = aR > _envR ? aR : aR + (_envR - aR) * _envRel;
+            _envL = Dsp.Ftz(_envL); _envR = Dsp.Ftz(_envR);
+            l = (MathF.Sin((l * _pre + _bias) * _foldK) - _dc) * _envL * Makeup;
+            r = (MathF.Sin((r * _pre + _bias) * _foldK) - _dc) * _envR * Makeup;
+        }
+        public bool IsRinging => false;
+        public void SetMusicalContext(int key, int scale) { }
+    }
+
+    // ── Phaser ─ char: sweep position · mode: 4/8 stages. amount = depth/mix ──
+    // Cascaded first-order allpasses with light feedback, mixed with the dry to
+    // form moving notches. Char sets the allpass frequency (the sweep position) —
+    // point the LFO/envelope at Char for classic phasing. Mode taps 4 or 8
+    // stages (subtle vs deep). Rings only briefly via feedback; treated tail-free.
+    public sealed class PhaserFx : IDrumFx
+    {
+        float _sr = 44100f; int _cc; float _a;
+        readonly float[] _sL = new float[8];
+        readonly float[] _sR = new float[8];
+        float _fbL, _fbR;
+        public void Prepare(float sr, float spt) { _sr = sr > 0 ? sr : 44100f; Reset(); }
+        public void Reset() { Array.Clear(_sL, 0, 8); Array.Clear(_sR, 0, 8); _fbL = _fbR = 0f; _cc = 0; }
+        public void Process(ref float l, ref float r, float amount, float p1, float mode)
+        {
+            if (amount <= 0f) return;
+            if (_cc == 0)
+            {
+                float f = 200f * MathF.Pow(40f, p1);                 // 200 Hz → 8 kHz
+                float t = MathF.Tan(MathF.PI * f / _sr);
+                _a = (t - 1f) / (t + 1f);                            // 1st-order allpass coef
+                _cc = 16;
+            }
+            _cc--;
+            l = RunChannel(l, _sL, ref _fbL, amount, mode);
+            r = RunChannel(r, _sR, ref _fbR, amount, mode);
+        }
+        float RunChannel(float x, float[] s, ref float fbState, float amount, float mode)
+        {
+            const float fb = 0.5f;
+            float v = x + fbState * fb;
+            float out4 = 0f;
+            for (int i = 0; i < 8; i++)
+            {
+                float y = _a * v + s[i];                             // allpass: y = a*v + s
+                s[i] = Dsp.Ftz(v - _a * y);                          // s = v - a*y
+                v = y;
+                if (i == 3) out4 = v;                                // 4-stage tap
+            }
+            float stageOut = (out4 + (v - out4) * mode) * 0.87f;     // 4 → 8 stages, level-match
+            fbState = Dsp.Ftz(stageOut);
+            return x + (stageOut - x) * amount;                      // dry → phased (depth/mix)
+        }
+        public bool IsRinging => false;
+        public void SetMusicalContext(int key, int scale) { }
+    }
+
+    // ── SubOctave ─ char: sub tone · mode: -1/-2 octaves. amount = sub level ─
+    // Analog-style octave divider: a flip-flop toggled by rising zero-crossings of
+    // the (lowpassed, mono) input makes a square an octave down (every 2nd crossing
+    // = two down). The square follows the input envelope and is tone-shaped, then
+    // mixed under the dry. Best on monophonic hits (kicks, toms). Tail-free.
+    public sealed class SubOctaveFx : IDrumFx
+    {
+        float _sr = 44100f, _lp, _env, _sub, _tone; bool _state, _prevPos; int _div;
+        int _cc; float _toneCoef = 0.2f, _envRel;
+        public void Prepare(float sr, float spt) { _sr = sr > 0 ? sr : 44100f; _envRel = (float)Math.Exp(-1.0/(0.08*_sr)); Reset(); }
+        public void Reset() { _lp = _env = _sub = _tone = 0f; _state = _prevPos = false; _div = 0; _cc = 0; }
+        public void Process(ref float l, ref float r, float amount, float p1, float mode)
+        {
+            if (amount <= 0f) return;
+            if (_cc == 0)
+            {
+                float fc = 150f * MathF.Pow(40f, p1);                // sub tone 150 Hz → 6 kHz
+                _toneCoef = 1f - MathF.Exp(-2f * MathF.PI * fc / _sr);
+                _cc = 16;
+            }
+            _cc--;
+            float mono = (l + r) * 0.5f;
+            _lp += 0.05f * (mono - _lp);                             // stabilise crossing detection
+            bool pos = _lp > 0f;
+            if (pos && !_prevPos)                                    // rising zero-crossing
+            {
+                if (mode < 0.5f) _state = !_state;                  // -1 oct: toggle each crossing
+                else { _div ^= 1; if (_div == 0) _state = !_state; }// -2 oct: every 2nd
+            }
+            _prevPos = pos;
+            float am = MathF.Abs(mono);
+            _env = am > _env ? am : am + (_env - am) * _envRel;      // follow dynamics
+            float sq = _state ? 1f : -1f;
+            _tone += _toneCoef * (sq * _env - _tone);               // tone lowpass on the sub
+            _tone = Dsp.Ftz(_tone);
+            float sub = _tone * amount * 0.6f;        // level-match (was +6 dB)
+            l += sub; r += sub;
+        }
+        public bool IsRinging => false;
+        public void SetMusicalContext(int key, int scale) { }
+    }
+
+    // ── Formant ─ char: vowel (A-E-I-O-U) · mode: dark/bright. amount = mix ───
+    // Three band-pass resonators at vowel formant frequencies, summed. Char morphs
+    // the formants through A-E-I-O-U; Mode tilts toward the upper formants (bright)
+    // or lower (dark). Sweep Char with the LFO/envelope for a talking filter.
+    public sealed class FormantFx : IDrumFx
+    {
+        // F1,F2,F3 per vowel (A,E,I,O,U), approx male voice
+        static readonly float[][] V =
+        {
+            new[]{ 700f, 1220f, 2600f },  // A
+            new[]{ 530f, 1840f, 2480f },  // E
+            new[]{ 270f, 2290f, 3010f },  // I
+            new[]{ 570f,  840f, 2410f },  // O
+            new[]{ 300f,  870f, 2240f },  // U
+        };
+        float _sr = 44100f; int _cc;
+        readonly float[] _k = new float[3];
+        readonly float[] _a1 = new float[3], _a2 = new float[3], _a3 = new float[3];
+        readonly float[] _icL1 = new float[3], _icL2 = new float[3];
+        readonly float[] _icR1 = new float[3], _icR2 = new float[3];
+        readonly float[] _gain = new float[3];
+        public void Prepare(float sr, float spt) { _sr = sr > 0 ? sr : 44100f; Reset(); }
+        public void Reset()
+        {
+            Array.Clear(_icL1,0,3); Array.Clear(_icL2,0,3);
+            Array.Clear(_icR1,0,3); Array.Clear(_icR2,0,3); _cc = 0;
+        }
+        public void Process(ref float l, ref float r, float amount, float p1, float mode)
+        {
+            if (amount <= 0f) return;
+            if (_cc == 0)
+            {
+                float fpos = p1 * (V.Length - 1);                    // vowel morph position
+                int i0 = (int)fpos; if (i0 > V.Length - 2) i0 = V.Length - 2;
+                float fr = fpos - i0;
+                for (int b = 0; b < 3; b++)
+                {
+                    float f = V[i0][b] + (V[i0 + 1][b] - V[i0][b]) * fr;
+                    float g = MathF.Tan(MathF.PI * f / _sr);
+                    float q = 5f;                                    // formant sharpness
+                    _k[b] = 1f / q;
+                    _a1[b] = 1f / (1f + g * (g + _k[b])); _a2[b] = g * _a1[b]; _a3[b] = g * _a2[b];
+                    // bright (mode 1) tilts gain to upper formants, dark to lower
+                    float tilt = (mode - 0.5f) * 2f;                 // -1 dark .. +1 bright
+                    _gain[b] = 1f + tilt * (b - 1) * 0.6f;           // b=0 down, b=2 up
+                    if (_gain[b] < 0f) _gain[b] = 0f;
+                    _gain[b] *= 3.5f;                               // level-match (was -11 dB)
+                }
+                _cc = 16;
+            }
+            _cc--;
+            l = Band(l, _icL1, _icL2, amount);
+            r = Band(r, _icR1, _icR2, amount);
+        }
+        float Band(float x, float[] ic1, float[] ic2, float amount)
+        {
+            float wet = 0f;
+            for (int b = 0; b < 3; b++)
+            {
+                float v3 = x - ic2[b];
+                float v1 = _a1[b] * ic1[b] + _a2[b] * v3;
+                float v2 = ic2[b] + _a2[b] * ic1[b] + _a3[b] * v3;
+                ic1[b] = Dsp.Ftz(2f * v1 - ic1[b]); ic2[b] = Dsp.Ftz(2f * v2 - ic2[b]);
+                float bp = _k[b] * v1;                               // band-pass tap
+                wet += bp * _gain[b];
+            }
+            return x + (wet - x) * amount;                          // dry → vowel (mix)
+        }
+        public bool IsRinging => false;
+        public void SetMusicalContext(int key, int scale) { }
     }
 }

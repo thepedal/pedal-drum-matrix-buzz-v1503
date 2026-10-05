@@ -2,7 +2,28 @@
 
 Port of [pedal-drum-matrix](https://github.com/thepedal/pedal-drum-matrix) to
 **Jeskola Buzz 1503, 32-bit**. Same DSP, parameters and presets as the ReBuzz
-version (v1.3.5); only the host boundary changed. See *Buzz 1503 port* below.
+version (v1.3.6); only the host boundary changed. See *Buzz 1503 port* below.
+
+**Versioning.** This repo's releases are numbered independently: release
+**v1.0** is the port of ReBuzz v1.3.5, **v1.1** the port of ReBuzz v1.3.6, and
+**v1.2** adds the readout panel (below) to the v1.3.6 code. The About box and
+assembly version show the ReBuzz version the code tracks (currently 1.3.6).
+
+**Readout panel (1503 only).** Buzz 1503's parameter window shows the sliders
+as raw 0-127 numbers: the per-effect labels ReBuzz shows come from
+`DescribeValue`, which Buzz's managed-machine interface only gained after
+build 1503. So the port embeds a small display-only panel at the top of the
+parameter window. One row per slot shows the effect and its Amount, Char,
+Mode, Env and LFO depth with the same labels as ReBuzz (the Resonator's Char
+as a note name, Delay's as feedback, and so on); three rows below show the
+feedback loop (Feedback, Time, Tone, Env to Fb), the LFO and tuning (LFO, Key,
+Scale) and the rest (Release, Morph, Limiter, Auto gain). Editing still happens
+on Buzz's sliders, or by MIDI; the panel follows either within a tenth of a
+second, including a slot's Type change. It shows parameter values, not the
+values the LFO and envelope modulate them to. Columns are sized for the
+effects currently loaded and every setting is spaced for its widest possible
+value, so nothing moves while you adjust a slider; only changing an effect can
+resize the columns. In narrow windows the LFO and Env columns drop out first.
 
 A single stereo-in / stereo-out drum-fx **rack**: six serial slots,
 each one a swappable effect. Aimed at serious textural transformation of drum
@@ -34,7 +55,8 @@ build output; the copy is non-fatal if Buzz has the DLL locked.
 shared almost entirely: the ReBuzz repo adopted the `MathF` shim, the explicit
 `SetMusicalContext`, the `WM_READ` handling, the Store latch and the ASCII
 strings. What remains specific to this repo is the csproj (`net48` / `x86`,
-Buzz paths) and the About box (title, repo URL, GPL-3.0).
+Buzz paths), the About box (title, repo URL, GPL-3.0) and `ReadoutGui.cs`
+(the readout panel, a new file; the shared code is untouched).
 
 **Original port changes (v1.3.3), for reference:**
 
@@ -81,6 +103,11 @@ The Char + Mode pair per slot is designed for the BCR2000's six dual-function
 | Drive | bias / asymmetry | hard clip vs soft |
 | Lowpass | cutoff | Low vs High Q |
 | Highpass | cutoff | Low vs High Q |
+| Transient | attack↔sustain | fast vs slow detector |
+| Wavefolder | fold amount | symmetric vs asymmetric |
+| Phaser | sweep position | 4 vs 8 stages |
+| SubOctave | sub tone | -1 vs -2 octaves |
+| Formant | vowel (A-E-I-O-U) | dark vs bright |
 | RingMod | carrier fine tune (±1 oct) | ring-mod vs AM |
 | Comb | feedback damping | +/− feedback sign |
 | Stutter | repeats (2–8) | reverse slice |
@@ -147,6 +174,7 @@ Comb/movement → pedal-chorus · bipolar-param offset → pedal-comp §2.
 - `Slot.cs` — slot host, swap crossfade, amount smoothing, tail flag.
 - `DrumFx.cs` — `IDrumFx`, `FxType`, factory, all effects, limiter, auto gain, feedback, LFO.
 - `MathF.cs` — `MathF` shim for .NET Framework 4.8.
+- `ReadoutGui.cs` — Buzz 1503 only: the embedded readout panel.
 - `Pedal Drum Matrix.NET.prs.xml` — 30-preset bundle.
 - `LICENSE` — GNU General Public License v3.0.
 
