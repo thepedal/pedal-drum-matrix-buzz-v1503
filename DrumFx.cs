@@ -6,7 +6,7 @@ namespace PedalDrumMatrix
     public enum FxType
     {
         None = 0, Bitcrush, Drive, Lowpass, RingMod, Comb, Stutter, Delay, Reverb, Gate, Resonator, Highpass,
-        Transient, Wavefolder, Phaser, SubOctave, Formant
+        Transient, Wavefolder, Phaser, SubOctave, Formant, Resampler
     }
 
     // One effect occupying a slot. Stereo, per-sample.
@@ -47,6 +47,7 @@ namespace PedalDrumMatrix
             FxType.Phaser    => new PhaserFx(),
             FxType.SubOctave => new SubOctaveFx(),
             FxType.Formant   => new FormantFx(),
+            FxType.Resampler => new ResamplerFx(),
             _ => new NoneFx()
         };
     }
@@ -495,32 +496,44 @@ namespace PedalDrumMatrix
         public void SetMusicalContext(int key, int scale) { }
     }
 
-    // ── Delay ─ char: feedback · mode: mono → ping-pong (rings). amount = mix ─
+    // ── Delay ─ char: time (tempo-synced ticks) · mode: Low/High feedback ────
+    // amount = mix. Char steps through tick-synced delay lengths (the machine
+    // converts Char→ticks→samples per block so it tracks tempo); Mode picks a
+    // low or high feedback value (number of repeats). No ping-pong.
     public sealed class DelayFx : IDrumFx
     {
+        // Char → delay length in ticks. Stepped across the knob.
+        public static readonly int[] TickVals = { 1, 2, 3, 4, 6, 8, 12, 16, 24, 32 };
+        public static int CharToTicks(float p1)
+        {
+            int i = (int)(p1 * (TickVals.Length - 1) + 0.5f);
+            if (i < 0) i = 0; else if (i >= TickVals.Length) i = TickVals.Length - 1;
+            return TickVals[i];
+        }
+
         float[] _bL, _bR; int _w, _n, _d;
         float _sr = 44100f, _spt = 11025f; Tail _tail;
         public void Prepare(float sr, float spt)
         {
             _sr = sr > 0 ? sr : 44100f;
             _spt = spt > 1f ? spt : _sr / 8f;
-            _n = Math.Max(8, (int)(2.0f * _sr));
+            _n = Math.Max(8, (int)(4.0f * _sr));          // up to ~4 s for long tick syncs
             _bL = new float[_n]; _bR = new float[_n];
             _tail.Prepare(_sr);
-            _d = Math.Min(_n - 1, Math.Max(1, (int)(6f * _spt)));
+            _d = Math.Min(_n - 1, Math.Max(1, (int)(6f * _spt)));   // 6-tick fallback
             Reset();
         }
+        // Delay length in samples, pushed per block by the machine (Char→ticks × spt).
+        public void SetDelaySamples(int s) { _d = s < 1 ? 1 : (s > _n - 1 ? _n - 1 : s); }
         public void Reset() { Array.Clear(_bL,0,_n); Array.Clear(_bR,0,_n); _w=0; _tail.Reset(); }
         public void Process(ref float l, ref float r, float amount, float p1, float mode)
         {
             if (amount <= 0f) { _tail.Reset(); return; }
-            float fb = p1 * 0.95f, wet = amount;
+            float fb = 0.25f + mode * 0.5f, wet = amount;   // Mode: Low(0.25) → High(0.75)
             int rp = _w - _d; if (rp < 0) rp += _n;
             float dl = _bL[rp], dr = _bR[rp];
-            float fbL = dl + (dr - dl) * mode;          // mono → ping-pong (crossed feedback)
-            float fbR = dr + (dl - dr) * mode;
-            _bL[_w] = Dsp.Ftz(l + fb * fbL);
-            _bR[_w] = Dsp.Ftz(r + fb * fbR);
+            _bL[_w] = Dsp.Ftz(l + fb * dl);                 // mono feedback (no ping-pong)
+            _bR[_w] = Dsp.Ftz(r + fb * dr);
             _w++; if (_w >= _n) _w = 0;
             l = l + wet * dl; r = r + wet * dr;
             _tail.Feed(wet * dl, wet * dr);
@@ -961,6 +974,36 @@ namespace PedalDrumMatrix
                 wet += bp * _gain[b];
             }
             return x + (wet - x) * amount;                          // dry → vowel (mix)
+        }
+        public bool IsRinging => false;
+        public void SetMusicalContext(int key, int scale) { }
+    }
+
+    // ── Resampler ─ char: sample rate (full → very low) · mode: bits (full/8) ─
+    // Classic decimator/downsampler: Char lowers the effective sample rate via
+    // sample-and-hold (full rate → ~1/100), Mode crossfades to 8-bit depth,
+    // Amount blends dry → resampled. Separate, explicit lo-fi vs Bitcrush's tilt.
+    public sealed class ResamplerFx : IDrumFx
+    {
+        float _holdL, _holdR, _phase;
+        public void Prepare(float sr, float spt) { Reset(); }
+        public void Reset() { _holdL = _holdR = 0f; _phase = 1f; }
+        public void Process(ref float l, ref float r, float amount, float p1, float mode)
+        {
+            if (amount <= 0f) return;
+            float step = 1f - p1 * 0.99f;                 // Char: full rate (1) → ~1/100
+            if (step < 0.008f) step = 0.008f;
+            _phase += step;
+            if (_phase >= 1f) { _phase -= 1f; _holdL = l; _holdR = r; }   // sample & hold
+
+            float xl = _holdL, xr = _holdR;
+            float ql = MathF.Round(xl * 128f) * (1f / 128f);   // 8-bit (256 levels)
+            float qr = MathF.Round(xr * 128f) * (1f / 128f);
+            xl += (ql - xl) * mode;                        // crossfade full → 8-bit
+            xr += (qr - xr) * mode;
+
+            l += (xl - l) * amount;                        // dry → resampled (mix)
+            r += (xr - r) * amount;
         }
         public bool IsRinging => false;
         public void SetMusicalContext(int key, int scale) { }

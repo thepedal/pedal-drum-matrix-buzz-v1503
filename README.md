@@ -2,12 +2,14 @@
 
 Port of [pedal-drum-matrix](https://github.com/thepedal/pedal-drum-matrix) to
 **Jeskola Buzz 1503, 32-bit**. Same DSP, parameters and presets as the ReBuzz
-version (v1.3.6); only the host boundary changed. See *Buzz 1503 port* below.
+version (v1.3.8); only the host boundary changed. See *Buzz 1503 port* below.
 
 **Versioning.** This repo's releases are numbered independently: release
-**v1.0** is the port of ReBuzz v1.3.5, **v1.1** the port of ReBuzz v1.3.6, and
-**v1.2** adds the readout panel (below) to the v1.3.6 code. The About box and
-assembly version show the ReBuzz version the code tracks (currently 1.3.6).
+**v1.0** is the port of ReBuzz v1.3.5, **v1.1** the port of ReBuzz v1.3.6,
+**v1.2** adds the readout panel (below) to the v1.3.6 code, and **v1.3** is the
+port of ReBuzz v1.3.8 (reworked Delay, new Resampler) with the panel. The About
+box and assembly version show the ReBuzz version the code tracks (currently
+1.3.8).
 
 **Readout panel (1503 only).** Buzz 1503's parameter window shows the sliders
 as raw 0-127 numbers: the per-effect labels ReBuzz shows come from
@@ -108,10 +110,11 @@ The Char + Mode pair per slot is designed for the BCR2000's six dual-function
 | Phaser | sweep position | 4 vs 8 stages |
 | SubOctave | sub tone | -1 vs -2 octaves |
 | Formant | vowel (A-E-I-O-U) | dark vs bright |
+| Resampler | sample rate | full vs 8-bit |
 | RingMod | carrier fine tune (±1 oct) | ring-mod vs AM |
 | Comb | feedback damping | +/− feedback sign |
 | Stutter | repeats (2–8) | reverse slice |
-| Delay | feedback (mix stays on Amount) | ping-pong |
+| Delay | time (tempo-synced ticks) | Low vs High feedback |
 | Reverb | damping (bright↔dark) | bright tilt |
 | Gate | duty cycle | triplet timing |
 
@@ -150,8 +153,11 @@ Effect notes:
   mode selects one of two Q values (gentle Butterworth vs resonant).
 - RingMod — sine carrier 30 Hz → 3 kHz, wet scales with amount. Tail-free.
 - Comb — short feedback resonator (metallic); amount raises pitch + feedback. Rings.
-- Delay — tempo-synced (≈6 ticks, from `host.MasterInfo.SamplesPerTick`),
-  feedback + mix scale with amount. Rings.
+- Delay — tempo-synced; Char sets the time in ticks {1,2,3,4,6,8,12,16,24,32}
+  (from `host.MasterInfo.SamplesPerTick`, up to 4 s), Mode sets Low or High
+  feedback (0.25 / 0.75), Amount is the mix. No ping-pong. Rings.
+- Resampler — sample-and-hold decimator; Char lowers the effective sample rate
+  (full down to 1/100), Mode crossfades to 8-bit, Amount is the mix. Tail-free.
 - Gate — tempo-synced rhythmic gate, 8→1 ticks/cycle, 50% duty. Tail-free.
 - Stutter — tempo-synced beat-repeat: latches a slice and loops it 4× before
   grabbing a new one; amount shortens the slice + raises wet. Rings, then
@@ -292,8 +298,8 @@ machine awake (pull Feedback down to let it decay).
 
 Hovering a control shows its real current function via `DescribeValue`, read
 live from the slot's Type. A slot's **Char** reads e.g. `Q 2.0` under Filter,
-`Feedback 47%` under Delay, `Repeats 5` under Stutter; its **Mode** reads
-`Lowpass`/`Highpass`, `Ping-pong`/`Mono`, etc. Amount reads as a percentage.
+`8 ticks` under Delay, `Repeats 5` under Stutter; its **Mode** reads
+`Low Q`/`High Q`, `Low fb`/`High fb`, etc. Amount reads as a percentage.
 The static control names stay generic (the per-knob labels are a GUI job); the
 value readout carries the meaning.
 

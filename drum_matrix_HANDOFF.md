@@ -1,4 +1,4 @@
-# Pedal Drum Matrix (Buzz 1503) — Handoff (v1.3.6)
+# Pedal Drum Matrix (Buzz 1503) — Handoff (v1.3.8)
 
 A drum-centric multi-effect machine, ported from ReBuzz to Jeskola Buzz 1503
 (32-bit), tailored to a Behringer BCR2000
@@ -18,12 +18,13 @@ authoritative on host behaviour; see §0.
 ## 0. Buzz 1503 port (separate repo: pedal-drum-matrix-buzz-v1503)
 
 Repo releases are numbered independently of ReBuzz: release v1.0 = ReBuzz
-v1.3.5, v1.1 = ReBuzz v1.3.6, v1.2 = ReBuzz v1.3.6 + readout panel. The assembly / About version stays on the ReBuzz number it tracks.
+v1.3.5, v1.1 = ReBuzz v1.3.6, v1.2 = ReBuzz v1.3.6 + readout panel,
+v1.3 = ReBuzz v1.3.8 + readout panel. The assembly / About version stays on the ReBuzz number it tracks.
 
 Same DSP, parameter layout (49, unchanged order) and preset contents as the
-ReBuzz v1.3.6.
+ReBuzz v1.3.8.
 
-**Port deltas against ReBuzz v1.3.6** (everything else is byte-identical to
+**Port deltas against ReBuzz v1.3.8** (everything else is byte-identical to
 the ReBuzz source, which adopted the v1.3.3 port's host-boundary fixes):
 
 - `PedalDrumMatrix.NET.csproj` (net48 / x86, `BuzzDir`, Buzz paths).
@@ -103,7 +104,14 @@ new-effect checks on broadband noise at full Amount, Char 64, both Modes:
 Transient 0.0 dB (Char 64 is neutral), Wavefolder -1.6 / +2.1, Phaser -0.3 /
 -0.3, SubOctave +2.0 / +2.3, Formant -2.1 / +2.7 dB vs dry; all finite and the
 rack sleeps after input stops; SubOctave on 110 Hz puts a 55 Hz component at
--2.7 dB relative to the fundamental. v1.2 panel: compiled against stubs of the
+-2.7 dB relative to the fundamental. v1.3.8 checks: Delay echo times are exact
+tick multiples (Char 0 / 40 / 64 / 100 = 1 / 4 / 8 / 16 ticks at 6000 samples
+per tick), the second echo is 0.250 / 0.750 of the first for Low / High fb, and
+the tail renders under WM_NOIO then sleeps (4.2 s at High fb, 1 tick);
+Resampler is 0.0 dB vs dry on noise in both Modes, steps 483 times a second at
+Char 127 (1/100 of 48 kHz), and in 8-bit mode every output lies within 0.008
+of the 256-unit grid (the slot's smoothing takes ~280 ms to snap exactly, so
+measure after that). v1.2 panel: compiled against stubs of the
 .NET 4.8 WPF and BuzzGUI GUI types (Mono has no WPF), and a headless test drove
 it through a fake host: labels match DescribeValue (Resonator note names,
 Delay feedback, Bitcrush rate, Amount as a percentage), list parameters show
@@ -136,8 +144,10 @@ port (same in the ReBuzz original):
 - The limiter's soft clip `x - x^3/6.75` acts over its whole range, so with
   Limiter On even quiet signals are slightly bent (about 0.9% at -12 dBFS).
 - Delay's tail tracker only sees echoes that have already emerged. If the
-  input goes silent within one delay time (~6 ticks) of the last hit, the rack
-  can sleep with an echo still in the buffer, and that echo is lost.
+  input goes silent within one delay time of the last hit, the rack can sleep
+  with an echo still in the buffer, and that echo is lost. Since v1.3.8 the
+  delay time reaches 32 ticks (up to 4 s), so this is more likely than with the
+  old fixed 6 ticks.
 
 ---
 
@@ -242,7 +252,7 @@ false) only when nothing is ringing — `AnyTailRinging()` OR `_feedback.IsRingi
 ## 6. Effect palette
 
 `FxType` enum (index = preset contract, append only):
-`None=0, Bitcrush, Drive, Lowpass, RingMod, Comb, Stutter, Delay, Reverb, Gate, Resonator(=10), Highpass(=11), Transient(=12), Wavefolder(=13), Phaser(=14), SubOctave(=15), Formant(=16)`.
+`None=0, Bitcrush, Drive, Lowpass, RingMod, Comb, Stutter, Delay, Reverb, Gate, Resonator(=10), Highpass(=11), Transient(=12), Wavefolder(=13), Phaser(=14), SubOctave(=15), Formant(=16), Resampler(=17)`.
 (Lowpass keeps value 3 — the former `Filter` — so old lowpass-mode instances are
 bit-identical; Highpass is appended at 11.)
 
@@ -278,7 +288,13 @@ Char (the rotary character), and Mode (the switch). Meanings:
   through zero at the midpoint, which is what makes the flip click-free).
 - **Stutter** — Char: repeats (2 to 8). Mode: forward -> reverse slice.
   Beat-repeat latched ~1 tick.
-- **Delay** — Char: feedback. Mode: mono -> ping-pong. Amount = mix, ~6 ticks.
+- **Delay** — Char: delay time, stepped through tempo-synced tick values
+  {1,2,3,4,6,8,12,16,24,32}; the machine converts Char->ticks x spt per block and
+  pushes it to the active DelayFx (via `is DelayFx` cast), so it tracks tempo.
+  Mode: Low vs High feedback (0.25 / 0.75). Amount = mix. No ping-pong.
+- **Resampler** — decimator/downsampler. Char: effective sample rate, full down
+  to ~1/100 (sample-and-hold). Mode: bit depth, full vs 8-bit (crossfaded).
+  Amount: dry -> resampled mix.
 - **Reverb** — Char: damping. Mode: normal -> bright tilt. Freeverb 8 comb + 4
   allpass.
 - **Gate** — Char: duty cycle. Mode: straight -> triplet timing. Tempo-synced.
@@ -470,7 +486,7 @@ idx  name            range     def   meaning
 (None,Bitcrush,Drive,Filter,RingMod,Comb,Stutter,Delay,Reverb,Gate,Resonator).
 
 `DescribeValue` shows real per-effect function on hover: Filter Char = `Q 2.0`,
-Delay Char = `Feedback 47%`, Resonator Char = the note (e.g. `E3`), depths =
+Delay Char = `8 ticks`, Resampler Char = the effective rate (e.g. `10.6 kHz`), Resonator Char = the note (e.g. `E3`), depths =
 signed percent, FbTime/EnvRelease = ms, FbTone = Hz, Morph = percent, Mode = the
 named state per effect (`Lowpass`/`Highpass`, etc.).
 
@@ -639,11 +655,22 @@ both-modes compute cheap), and fast `Sin` for the RingMod/LFO oscillators.
   Ported to Buzz 1503 as repo release v1.1 (no port-specific changes needed:
   the new code uses only shimmed `MathF` members and net48 APIs, and its
   readouts are ASCII with no `/ < > &`).
+- **v1.3.7** — reworked the Delay controls without adding a parameter: Char
+  steps through tempo-synced delay times (ticks), Mode selects Low/High
+  feedback, Amount stays mix; ping-pong dropped. Delay buffer 2 s -> 4 s.
+  Delay slots in old songs, and all 30 bundled presets (each has a Delay slot;
+  the bank was not migrated), now sound different.
+- **v1.3.8** — new effect type Resampler (appended, value 17). Slot Type
+  MaxValue 16 -> 17; no new parameter. Ported to Buzz 1503 as repo release
+  v1.3, with no port-specific code changes (the new readouts are ASCII, and
+  the readout panel picks up the new labels through `DescribeValue`).
 
 ## 17. Roadmap / declined
 
 - **GUI: declined by the user.** Control is via mapped BCR2000 encoders and the
-  parameter window; `DescribeValue` carries the readouts.
+  parameter window; `DescribeValue` carries the readouts. (The Buzz 1503 port
+  has a display-only readout panel instead, since 1503 never calls
+  `DescribeValue`; see §0.)
 - The machine is feature-complete for v1.3. Future direction is driven by
   real-world playing feedback rather than a fixed backlog.
 - If a future feature wants another mod source, the slot's source-agnostic Char
