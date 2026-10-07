@@ -32,13 +32,14 @@ namespace PedalDrumMatrix
         }
 
         // Called once per Work block, before the sample loop.
-        public void SetParams(int typeRaw, int amountRaw, int charRaw, bool mode, int key, int scale, int delaySamples)
+        public void SetParams(int typeRaw, int amountRaw, int charRaw, bool mode, int key, int scale, int delaySamples, float spt)
         {
             _amountTarget = amountRaw / 127f;
             _p1Target     = charRaw   / 127f;
             _modeTarget   = mode ? 1f : 0f;
             _fx[(int)_active].SetMusicalContext(key, scale);
             if (_fx[(int)_active] is DelayFx dfx) dfx.SetDelaySamples(delaySamples);
+            if (_fx[(int)_active] is ChorusFx cfx) cfx.SetSpt(spt);
 
             var t = (FxType)typeRaw;
             if (t != _active)

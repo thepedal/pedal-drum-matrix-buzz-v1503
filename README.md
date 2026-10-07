@@ -2,14 +2,15 @@
 
 Port of [pedal-drum-matrix](https://github.com/thepedal/pedal-drum-matrix) to
 **Jeskola Buzz 1503, 32-bit**. Same DSP, parameters and presets as the ReBuzz
-version (v1.3.8); only the host boundary changed. See *Buzz 1503 port* below.
+version (v1.4.0); only the host boundary changed. See *Buzz 1503 port* below.
 
 **Versioning.** This repo's releases are numbered independently: release
 **v1.0** is the port of ReBuzz v1.3.5, **v1.1** the port of ReBuzz v1.3.6,
-**v1.2** adds the readout panel (below) to the v1.3.6 code, and **v1.3** is the
-port of ReBuzz v1.3.8 (reworked Delay, new Resampler) with the panel. The About
-box and assembly version show the ReBuzz version the code tracks (currently
-1.3.8).
+**v1.2** adds the readout panel (below) to the v1.3.6 code, **v1.3** is the
+port of ReBuzz v1.3.8 (reworked Delay, new Resampler), and **v1.4** the port of
+ReBuzz v1.4.0 (Chorus, Freeze, AutoWah, Exciter), both with the panel. The
+About box and assembly version show the ReBuzz version the code tracks
+(currently 1.4.0).
 
 **Readout panel (1503 only).** Buzz 1503's parameter window shows the sliders
 as raw 0-127 numbers: the per-effect labels ReBuzz shows come from
@@ -57,8 +58,14 @@ build output; the copy is non-fatal if Buzz has the DLL locked.
 shared almost entirely: the ReBuzz repo adopted the `MathF` shim, the explicit
 `SetMusicalContext`, the `WM_READ` handling, the Store latch and the ASCII
 strings. What remains specific to this repo is the csproj (`net48` / `x86`,
-Buzz paths), the About box (title, repo URL, GPL-3.0) and `ReadoutGui.cs`
-(the readout panel, a new file; the shared code is untouched).
+Buzz paths), the About box (title, repo URL, GPL-3.0) and `ReadoutGui.cs`.
+
+ReBuzz v1.4.0 added its own `ReadoutGui.cs`, modelled on this one but tuned
+for ReBuzz: a fixed 560 px width (ReBuzz sizes the parameter window to its
+GUI) and hard-coded dark colours (ReBuzz's theme). Buzz 1503 clips the window
+instead (about 440 px wide at 125% scaling) and uses the light system colours,
+so this repo keeps its own `ReadoutGui.cs` in place of the ReBuzz one. Both
+panels get their labels from the shared `DescribeValue`.
 
 **Original port changes (v1.3.3), for reference:**
 
@@ -111,6 +118,10 @@ The Char + Mode pair per slot is designed for the BCR2000's six dual-function
 | SubOctave | sub tone | -1 vs -2 octaves |
 | Formant | vowel (A-E-I-O-U) | dark vs bright |
 | Resampler | sample rate | full vs 8-bit |
+| Chorus | rate (tempo-synced ticks) | chorus vs flanger |
+| Freeze | grain size | one-shot vs continuous |
+| AutoWah | sensitivity | up vs down sweep |
+| Exciter | frequency | tube vs bright |
 | RingMod | carrier fine tune (±1 oct) | ring-mod vs AM |
 | Comb | feedback damping | +/− feedback sign |
 | Stutter | repeats (2–8) | reverse slice |

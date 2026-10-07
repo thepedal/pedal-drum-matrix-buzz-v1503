@@ -1,4 +1,4 @@
-# Pedal Drum Matrix (Buzz 1503) — Handoff (v1.3.8)
+# Pedal Drum Matrix (Buzz 1503) — Handoff (v1.4.0)
 
 A drum-centric multi-effect machine, ported from ReBuzz to Jeskola Buzz 1503
 (32-bit), tailored to a Behringer BCR2000
@@ -19,17 +19,24 @@ authoritative on host behaviour; see §0.
 
 Repo releases are numbered independently of ReBuzz: release v1.0 = ReBuzz
 v1.3.5, v1.1 = ReBuzz v1.3.6, v1.2 = ReBuzz v1.3.6 + readout panel,
-v1.3 = ReBuzz v1.3.8 + readout panel. The assembly / About version stays on the ReBuzz number it tracks.
+v1.3 = ReBuzz v1.3.8 + readout panel, v1.4 = ReBuzz v1.4.0 + readout panel. The assembly / About version stays on the ReBuzz number it tracks.
 
 Same DSP, parameter layout (49, unchanged order) and preset contents as the
-ReBuzz v1.3.8.
+ReBuzz v1.4.0.
 
-**Port deltas against ReBuzz v1.3.8** (everything else is byte-identical to
+**Port deltas against ReBuzz v1.4.0** (everything else is byte-identical to
 the ReBuzz source, which adopted the v1.3.3 port's host-boundary fixes):
 
 - `PedalDrumMatrix.NET.csproj` (net48 / x86, `BuzzDir`, Buzz paths).
 - About box: "(Buzz 1503)" in the title, this repo's URL, GPL-3.0.
-- `ReadoutGui.cs` (port-only file, v1.2): embedded WPF readout panel. See below.
+- `ReadoutGui.cs`: this repo's own readout panel (since v1.2). ReBuzz v1.4.0
+  ships a different `ReadoutGui.cs` under the same name: fixed 560 px wide
+  (ReBuzz sizes the parameter window to the GUI) with hard-coded dark colours
+  (ReBuzz's theme). In Buzz 1503 that panel would be clipped (the window clips
+  at ~440 px at 125% scaling, 1503 notes 4.2) and dark on a light window, so
+  **do not copy ReBuzz's `ReadoutGui.cs` over this one** when porting. The
+  ReBuzz panel also omits Key and Scale from its change check, so Resonator
+  note names there go stale when only Key or Scale changes; this one does not.
 
 **Why the panel exists.** Buzz 1503 never calls `DescribeValue` (confirmed in
 Buzz: the parameter window shows raw 0-127 values). Buzz's own changelog
@@ -66,7 +73,8 @@ out in two rows that got trimmed; both fixed before release. When the window
 is still too narrow: drop LFO, then Env, then trim Char; a global row too wide
 is squeezed evenly and trimmed.
 
-**Porting a future ReBuzz release with the panel:** keep `ReadoutGui.cs`. New
+**Porting a future ReBuzz release with the panel:** keep this repo's
+`ReadoutGui.cs` (not ReBuzz's, see above). New
 effect types and changed labels need nothing (they come through
 `DescribeValue`). New parameters appear only if added to `ReadoutModel`.
 Renamed parameters must be renamed there too, or they show as 0. Column
@@ -99,7 +107,15 @@ strings for non-ASCII and `/ < > &`.
 - **Licence** GPL-3.0 (1503 notes 6): `LICENSE` in the repo root, stated in the
   README and the About box. The ReBuzz original's About box says MIT.
 
-Validation done in the dev container (v1.3.3; re-run for each release. v1.3.6
+Validation done in the dev container (v1.3.3; re-run for each release. v1.4.0
+checks: Chorus modulation period matches its Char division (Char 0 / 64 / 127
+= 0.124 / 2.996 / 15.956 ticks against 1/8, 3 and 16); all four new effects
+give finite output in both Modes. Level vs dry on broadband noise at full
+Amount, Char 64 (information, not pass/fail): Chorus -2.6 / -1.3 dB, Freeze
+-0.1 / -0.1, AutoWah Up -3.2, Down -18.4 (loud input closes the down-sweep
+filter to ~180 Hz), Exciter Tube +5.0, Bright +6.4. Panel labels for the new
+effects (`1/8 t/cyc`, `Grain 380 ms`, `Sens 50%`, `Freq 12.0 kHz`, Mode names)
+come through `DescribeValue` and fit at 440 px. v1.3.6
 new-effect checks on broadband noise at full Amount, Char 64, both Modes:
 Transient 0.0 dB (Char 64 is neutral), Wavefolder -1.6 / +2.1, Phaser -0.3 /
 -0.3, SubOctave +2.0 / +2.3, Formant -2.1 / +2.7 dB vs dry; all finite and the
@@ -143,6 +159,13 @@ port (same in the ReBuzz original):
 
 - The limiter's soft clip `x - x^3/6.75` acts over its whole range, so with
   Limiter On even quiet signals are slightly bent (about 0.9% at -12 dBFS).
+- **Freeze in one-shot mode never lets the rack sleep.** Once it has captured
+  a grain it loops it for as long as its Amount is above 0, including after the
+  input stops (in testing, still at full level 11 s later) and after the song
+  stops. That is the effect's purpose (a sustained hold), but it also means
+  constant CPU and a pad that keeps sounding until Amount goes to 0 or the slot
+  changes type. Continuous mode re-captures the now-silent input, fades out and
+  sleeps (~0.7 s).
 - Delay's tail tracker only sees echoes that have already emerged. If the
   input goes silent within one delay time of the last hit, the rack can sleep
   with an echo still in the buffer, and that echo is lost. Since v1.3.8 the
@@ -252,7 +275,7 @@ false) only when nothing is ringing — `AnyTailRinging()` OR `_feedback.IsRingi
 ## 6. Effect palette
 
 `FxType` enum (index = preset contract, append only):
-`None=0, Bitcrush, Drive, Lowpass, RingMod, Comb, Stutter, Delay, Reverb, Gate, Resonator(=10), Highpass(=11), Transient(=12), Wavefolder(=13), Phaser(=14), SubOctave(=15), Formant(=16), Resampler(=17)`.
+`None=0, Bitcrush, Drive, Lowpass, RingMod, Comb, Stutter, Delay, Reverb, Gate, Resonator(=10), Highpass(=11), Transient(=12), Wavefolder(=13), Phaser(=14), SubOctave(=15), Formant(=16), Resampler(=17), Chorus(=18), Freeze(=19), AutoWah(=20), Exciter(=21)`.
 (Lowpass keeps value 3 — the former `Filter` — so old lowpass-mode instances are
 bit-identical; Highpass is appended at 11.)
 
@@ -295,6 +318,21 @@ Char (the rotary character), and Mode (the switch). Meanings:
 - **Resampler** — decimator/downsampler. Char: effective sample rate, full down
   to ~1/100 (sample-and-hold). Mode: bit depth, full vs 8-bit (crossfaded).
   Amount: dry -> resampled mix.
+- **Chorus / Ensemble** — two short LFO-modulated delay voices (stereo-opposed),
+  summed with dry. Char: tempo-synced modulation rate, ticks per cycle
+  {1/8,1/4,1/2,3/4,1,2,3,4,6,8,12,16}. Mode: chorus (~11 ms line, no feedback)
+  vs flanger (~1.2 ms line + feedback). Amount: mix.
+- **Freeze / Granular hold** — captures a slice and loops it (raised-cosine
+  window) as a sustained pad under the dry. Char: grain size, 380 ms down to
+  30 ms as it turns up. Mode: one-shot (transient-triggered capture; loops
+  until Amount is 0, see the known-behaviour note) vs continuous (re-capture
+  each loop, a smear). Rings (tail-tracked).
+- **Auto-wah / Envelope filter** — resonant band-pass (Q ~3.5) whose cutoff
+  tracks the input envelope, 180 Hz to 10 kHz. Char: sensitivity. Mode: up vs
+  down sweep. Amount: mix.
+- **Exciter / Enhancer** — high-passes, generates harmonics on that band and
+  adds them back. Char: band start, 1.5 to 12 kHz. Mode: tube (soft cubic) vs
+  bright (tanh). Amount: drive and level.
 - **Reverb** — Char: damping. Mode: normal -> bright tilt. Freeverb 8 comb + 4
   allpass.
 - **Gate** — Char: duty cycle. Mode: straight -> triplet timing. Tempo-synced.
@@ -664,6 +702,18 @@ both-modes compute cheap), and fast `Sin` for the RingMod/LFO oscillators.
   MaxValue 16 -> 17; no new parameter. Ported to Buzz 1503 as repo release
   v1.3, with no port-specific code changes (the new readouts are ASCII, and
   the readout panel picks up the new labels through `DescribeValue`).
+- **v1.3.9** — four new effect types appended (18-21): Chorus/Ensemble, Freeze
+  (granular hold, transient-triggered one-shot), Auto-wah (envelope filter),
+  Exciter. Slot Type MaxValue 17 -> 21; no new parameter. Chorus rate is
+  tempo-synced (Char = ticks per cycle, 1/8 to 16; spt pushed per block through
+  `Slot.SetParams` -> `ChorusFx.SetSpt`).
+- **v1.4.0** — ReBuzz gained its own embedded read-out GUI (`ReadoutGui.cs`),
+  modelled on this port's. No parameter or DSP change. Ported to Buzz 1503 as
+  repo release v1.4 with this repo's panel kept (see §0); no other
+  port-specific changes. The Chorus readouts contain `/` (`1/8 t/cyc`); that
+  is fine here, since 1503 only shows `DescribeValue` text through the panel
+  (WPF draws it as plain text) and the `/` rule (1503 notes 3.2) covers names,
+  descriptions and `ValueDescriptions`, which pass through XML and tooltips.
 
 ## 17. Roadmap / declined
 

@@ -6,7 +6,7 @@ namespace PedalDrumMatrix
     public enum FxType
     {
         None = 0, Bitcrush, Drive, Lowpass, RingMod, Comb, Stutter, Delay, Reverb, Gate, Resonator, Highpass,
-        Transient, Wavefolder, Phaser, SubOctave, Formant, Resampler
+        Transient, Wavefolder, Phaser, SubOctave, Formant, Resampler, Chorus, Freeze, AutoWah, Exciter
     }
 
     // One effect occupying a slot. Stereo, per-sample.
@@ -48,6 +48,10 @@ namespace PedalDrumMatrix
             FxType.SubOctave => new SubOctaveFx(),
             FxType.Formant   => new FormantFx(),
             FxType.Resampler => new ResamplerFx(),
+            FxType.Chorus    => new ChorusFx(),
+            FxType.Freeze    => new FreezeFx(),
+            FxType.AutoWah   => new AutoWahFx(),
+            FxType.Exciter   => new ExciterFx(),
             _ => new NoneFx()
         };
     }
@@ -1004,6 +1008,227 @@ namespace PedalDrumMatrix
 
             l += (xl - l) * amount;                        // dry → resampled (mix)
             r += (xr - r) * amount;
+        }
+        public bool IsRinging => false;
+        public void SetMusicalContext(int key, int scale) { }
+    }
+
+    // ── Chorus / Ensemble ─ char: rate · mode: chorus/flanger. amount = mix ──
+    // Short modulated delay lines detuned by LFOs, summed with dry. Two voices
+    // in stereo-opposed phase for width. Mode shortens the line and adds feedback
+    // for a flanger sweep. Char sets the modulation rate; depth is fixed-musical.
+    public sealed class ChorusFx : IDrumFx
+    {
+        // Char → LFO cycle length in ticks. Starts at sub-tick (fast shimmer).
+        public static readonly float[] Divs = { 0.125f, 0.25f, 0.5f, 0.75f, 1f, 2f, 3f, 4f, 6f, 8f, 12f, 16f };
+        public static readonly string[] DivLabels = { "1/8", "1/4", "1/2", "3/4", "1", "2", "3", "4", "6", "8", "12", "16" };
+        public static int CharToIdx(float p1)
+        {
+            int i = (int)(p1 * (Divs.Length - 1) + 0.5f);
+            return i < 0 ? 0 : (i >= Divs.Length ? Divs.Length - 1 : i);
+        }
+
+        float[] _bL, _bR; int _n, _w;
+        float _sr = 44100f, _ph0, _ph1, _rate = 1.5f, _fbL, _fbR, _spt = 11025f;
+        int _cc; float _depthS, _baseS, _fb;
+        public void Prepare(float sr, float spt)
+        {
+            _sr = sr > 0 ? sr : 44100f;
+            _spt = spt > 1f ? spt : _sr / 8f;
+            _n = Math.Max(8, (int)(0.05f * _sr));         // 50 ms line
+            _bL = new float[_n]; _bR = new float[_n];
+            Reset();
+        }
+        // Tempo-synced LFO rate: the machine pushes samples-per-tick per block.
+        public void SetSpt(float spt) { if (spt > 1f) _spt = spt; }
+        public void Reset() { Array.Clear(_bL,0,_n); Array.Clear(_bR,0,_n); _w=0; _ph0=0f; _ph1=0.25f; _fbL=_fbR=0f; _cc=0; }
+        public void Process(ref float l, ref float r, float amount, float p1, float mode)
+        {
+            if (amount <= 0f) return;
+            if (_cc == 0)
+            {
+                float ticks = Divs[CharToIdx(p1)];         // Char → tempo division (ticks/cycle, sub-tick ok)
+                float period = ticks * _spt; if (period < 2f) period = 2f;
+                _rate = _sr / period;                      // one LFO cycle per division
+                _baseS = (mode < 0.5f ? 0.011f : 0.0012f) * _sr;   // chorus ~11ms / flanger ~1.2ms
+                _depthS = (mode < 0.5f ? 0.004f : 0.0010f) * _sr;
+                _fb = mode * 0.6f;                         // feedback only in flanger range
+                _cc = 16;
+            }
+            _cc--;
+            _w++; if (_w >= _n) _w = 0;
+            float inc = _rate / _sr;
+            _ph0 += inc; if (_ph0 >= 1f) _ph0 -= 1f;
+            _ph1 += inc; if (_ph1 >= 1f) _ph1 -= 1f;
+            float m0 = 0.5f - 0.5f * MathF.Cos(2f * MathF.PI * _ph0);
+            float m1 = 0.5f - 0.5f * MathF.Cos(2f * MathF.PI * _ph1);
+            float dL = _baseS + _depthS * m0;              // stereo-opposed voices
+            float dR = _baseS + _depthS * m1;
+            _bL[_w] = Dsp.Ftz(l + _fb * _fbL);
+            _bR[_w] = Dsp.Ftz(r + _fb * _fbR);
+            float wetL = ReadFrac(_bL, _w, dL);
+            float wetR = ReadFrac(_bR, _w, dR);
+            _fbL = wetL; _fbR = wetR;
+            l += (wetL - l) * amount * 0.9f;
+            r += (wetR - r) * amount * 0.9f;
+        }
+        float ReadFrac(float[] b, int w, float d)
+        {
+            float rp = w - d; if (rp < 0) rp += _n;
+            int i0 = (int)rp; float fr = rp - i0; int i1 = i0 + 1; if (i1 >= _n) i1 -= _n;
+            return b[i0] + (b[i1] - b[i0]) * fr;
+        }
+        public bool IsRinging => false;
+        public void SetMusicalContext(int key, int scale) { }
+    }
+
+    // ── Freeze / Granular hold ─ char: grain size · mode: capture mode ───────
+    // Captures a short slice and loops it into a sustained pad under the dry.
+    // Char sets grain/loop length; Mode: one-shot (freeze the first slice while
+    // amount>0) vs continuous (re-capture on each loop wrap, a smearing texture).
+    // Loop is windowed and crossfaded at the wrap so it sustains without a click.
+    public sealed class FreezeFx : IDrumFx
+    {
+        float[] _ring, _grain; int _rn, _rw, _gn, _play; bool _have;
+        float _sr = 44100f; int _cc; bool _continuous;
+        float _fast, _slow, _fastRel, _slowRel; int _armWait, _pending;
+        Tail _tail;
+        public void Prepare(float sr, float spt)
+        {
+            _sr = sr > 0 ? sr : 44100f;
+            _rn = Math.Max(8, (int)(0.5f * _sr));          // 500 ms capture ring
+            _ring = new float[_rn]; _grain = new float[_rn];
+            _fastRel = (float)Math.Exp(-1.0 / (0.003 * _sr));
+            _slowRel = (float)Math.Exp(-1.0 / (0.100 * _sr));
+            _tail.Prepare(_sr); Reset();
+        }
+        public void Reset() { Array.Clear(_ring,0,_rn); _rw=0; _gn=0; _play=0; _have=false; _cc=0; _fast=_slow=0f; _armWait=0; _pending=-1; _tail.Reset(); }
+        public void Process(ref float l, ref float r, float amount, float p1, float mode)
+        {
+            float mono = (l + r) * 0.5f;
+            _ring[_rw] = mono; _rw++; if (_rw >= _rn) _rw = 0;   // always record dry
+
+            // transient detector on the dry input (for one-shot capture triggering)
+            float a = MathF.Abs(mono);
+            _fast = a > _fast ? a : a + (_fast - a) * _fastRel;
+            _slow = a > _slow ? a : a + (_slow - a) * _slowRel;
+            bool transient = _fast > _slow * 1.8f && _fast > 0.02f;
+            if (_armWait > 0) _armWait--;
+
+            if (amount <= 0f) { _have = false; _tail.Reset(); return; }
+            if (_cc == 0)
+            {
+                _gn = Math.Max(64, (int)((0.38f - p1 * 0.35f) * _sr));  // 380→30 ms grain (Char reversed)
+                if (_gn > _rn) _gn = _rn;
+                _continuous = mode >= 0.5f;
+                _cc = 16;
+            }
+            _cc--;
+
+            // One-shot: (re)capture on a fresh transient so a hit is frozen into a
+            // sustained grain (never captures the opening silence). Continuous:
+            // re-capture on each loop wrap for a smearing texture.
+            if (!_continuous)
+            {
+                // On a transient (or if we have nothing yet), schedule a capture one
+                // grain-length later so the ring fills with the hit body, not its
+                // leading edge. _pending counts down to the capture.
+                if ((!_have || transient) && _armWait == 0 && _pending < 0)
+                {
+                    _pending = _gn; _armWait = (int)(0.08f * _sr);
+                }
+                if (_pending == 0) { Capture(); _pending = -1; }
+                else if (_pending > 0) _pending--;
+            }
+            else if (!_have || _play == 0) Capture();
+
+            if (!_have) { return; }
+            float g = _grain[_play];
+            float wpos = _play / (float)_gn;
+            float win = 0.5f - 0.5f * MathF.Cos(2f * MathF.PI * wpos);   // raised-cosine loop window
+            float wet = g * win * 1.6f;                     // window halves RMS; compensate
+            _play++; if (_play >= _gn) _play = 0;
+            _tail.Feed(wet * amount, wet * amount);
+            l += (wet - l) * amount; r += (wet - r) * amount;
+        }
+        void Capture()
+        {
+            int start = _rw - _gn; if (start < 0) start += _rn;
+            for (int i = 0; i < _gn; i++) { int idx = start + i; if (idx >= _rn) idx -= _rn; _grain[i] = _ring[idx]; }
+            _play = 0; _have = true;
+        }
+        public bool IsRinging => _tail.Ringing;
+        public void SetMusicalContext(int key, int scale) { }
+    }
+
+    // ── Auto-wah / Envelope filter ─ char: sensitivity · mode: up/down ───────
+    // A resonant bandpass whose cutoff tracks the input envelope — louder input
+    // sweeps it open (up) or closed (down). Reuses the TPT SVF and an envelope
+    // follower. Amount = wet mix.
+    public sealed class AutoWahFx : IDrumFx
+    {
+        float _sr = 44100f, _env, _envRel, _ic1L, _ic2L, _ic1R, _ic2R;
+        int _cc; float _sens = 3f; bool _down;
+        public void Prepare(float sr, float spt)
+        {
+            _sr = sr > 0 ? sr : 44100f;
+            _envRel = (float)Math.Exp(-1.0 / (0.040 * _sr));   // 40 ms release
+            Reset();
+        }
+        public void Reset() { _env = 0f; _ic1L=_ic2L=_ic1R=_ic2R=0f; _cc=0; }
+        public void Process(ref float l, ref float r, float amount, float p1, float mode)
+        {
+            if (amount <= 0f) return;
+            if (_cc == 0) { _sens = 1f + p1 * 9f; _down = mode >= 0.5f; _cc = 8; }
+            _cc--;
+            float a = MathF.Max(MathF.Abs(l), MathF.Abs(r));
+            _env = a > _env ? a : a + (_env - a) * _envRel;
+            if (_env < 1e-15f) _env = 0f;
+            float e = _env * _sens; if (e > 1f) e = 1f;
+            float sweep = _down ? (1f - e) : e;
+            float fc = 180f * MathF.Pow(10000f / 180f, sweep);   // 180 Hz → 18 kHz
+            float g = MathF.Tan(MathF.PI * fc / _sr), k = 1f / 3.5f;   // Q ~3.5
+            float a1 = 1f / (1f + g * (g + k)), a2 = g * a1, a3 = g * a2;
+
+            float v3 = l - _ic2L, v1 = a1 * _ic1L + a2 * v3, v2 = _ic2L + a2 * _ic1L + a3 * v3;
+            _ic1L = Dsp.Ftz(2f*v1 - _ic1L); _ic2L = Dsp.Ftz(2f*v2 - _ic2L);
+            float bpL = k * v1;
+            l += (bpL * 2f - l) * amount;
+            v3 = r - _ic2R; v1 = a1 * _ic1R + a2 * v3; v2 = _ic2R + a2 * _ic1R + a3 * v3;
+            _ic1R = Dsp.Ftz(2f*v1 - _ic1R); _ic2R = Dsp.Ftz(2f*v2 - _ic2R);
+            float bpR = k * v1;
+            r += (bpR * 2f - r) * amount;
+        }
+        public bool IsRinging => false;
+        public void SetMusicalContext(int key, int scale) { }
+    }
+
+    // ── Exciter / Enhancer ─ char: frequency · mode: tube/bright. amount=drive
+    // Highpasses the signal, generates harmonics on that high band (soft or hard),
+    // and adds the result back for air/presence. Band-limited, unlike Drive.
+    public sealed class ExciterFx : IDrumFx
+    {
+        float _sr = 44100f, _hpL, _hxL, _hpR, _hxR; int _cc; float _aHP = 0.8f; bool _bright;
+        public void Prepare(float sr, float spt) { _sr = sr > 0 ? sr : 44100f; Reset(); }
+        public void Reset() { _hpL=_hxL=_hpR=_hxR=0f; _cc=0; }
+        public void Process(ref float l, ref float r, float amount, float p1, float mode)
+        {
+            if (amount <= 0f) return;
+            if (_cc == 0)
+            {
+                float fc = 1500f * MathF.Pow(8f, p1);      // 1.5 kHz → 12 kHz band start
+                _aHP = MathF.Exp(-2f * MathF.PI * fc / _sr);
+                _bright = mode >= 0.5f;
+                _cc = 16;
+            }
+            _cc--;
+            float drive = 1f + amount * 6f;
+            float hl = _aHP * (_hpL + l - _hxL); _hxL = l; _hpL = Dsp.Ftz(hl);
+            float hr = _aHP * (_hpR + r - _hxR); _hxR = r; _hpR = Dsp.Ftz(hr);
+            float exL = _bright ? Dsp.TanhFast(hl * drive * 1.5f) : (hl * drive - (hl*drive)*(hl*drive)*(hl*drive) * (1f/3f));
+            float exR = _bright ? Dsp.TanhFast(hr * drive * 1.5f) : (hr * drive - (hr*drive)*(hr*drive)*(hr*drive) * (1f/3f));
+            l += exL * amount * 0.22f;                      // add sparkle on top of dry (level-matched)
+            r += exR * amount * 0.22f;
         }
         public bool IsRinging => false;
         public void SetMusicalContext(int key, int scale) { }
